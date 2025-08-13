@@ -1,0 +1,33 @@
+{
+  "name": "rendimento-api-ecs",
+  "version": "1.0.0",
+  "description": "ECS proxy application to fix IP addresses for CORS purposes",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js",
+    "build": "echo 'No build step required'",
+    "test": "echo 'No tests specified'"
+  },
+  "keywords": [
+    "express",
+    "proxy",
+    "ecs",
+    "cors",
+    "aws"
+  ],
+  "author": "Skeps Digital",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
