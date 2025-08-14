@@ -1,304 +1,380 @@
-# Express.js ECS Transparent Proxy Implementation Guide
+# Guia de Implementação do Proxy Dinâmico Express.js
 
-## Overview
+## Visão Geral
 
-This implementation provides an Express.js application designed to run on Amazon ECS that acts as a **transparent HTTP proxy**. Unlike traditional proxies that require special request formats, this proxy intercepts all incoming requests and forwards them directly to a target host while maintaining the same URL path, method, headers, and body. The primary purpose is to fix IP address issues for CORS purposes by providing a consistent, fixed IP address for outbound requests.
+Esta implementação fornece uma aplicação Express.js projetada para executar em servidor que atua como um **proxy HTTP dinâmico**. O proxy aceita URLs de destino codificadas em URL como parte do caminho da requisição, permitindo fazer proxy para qualquer URL de destino dinamicamente. O objetivo principal é corrigir problemas de endereço IP para fins de CORS, fornecendo um endereço IP consistente e fixo para requisições de saída.
 
-## Architecture
+## Arquitetura
 
 ```
-Your Application → ECS Transparent Proxy → Target API
-   (any path)        (same path)         (fixed IP via NAT Gateway)
+Sua Aplicação → Proxy Dinâmico → Qualquer API de Destino
+/{destino-codificado}    (decodificar & encaminhar)    (IP fixo via Gateway NAT)
 ```
 
-The application makes requests to the ECS proxy using the same API structure as the target API. The proxy transparently forwards everything to the actual target host with a consistent IP address.
+A aplicação faz requisições para o proxy com URLs de destino codificadas em URL. O proxy decodifica a URL e encaminha a requisição para o destino real com um endereço IP consistente.
 
-## Key Features
+## Padrão de Requisição
 
-### 1. Transparent Forwarding
-- **Preserves original API structure**: Your code doesn't need to change
-- **Path preservation**: `/api/v1/login` → `TARGET_HOST/api/v1/login`
-- **Method preservation**: GET, POST, PUT, PATCH, DELETE all supported
-- **Header forwarding**: All headers (except hop-by-hop) are forwarded
-- **Body forwarding**: JSON, form data, raw data all supported
-- **Query parameter preservation**: All URL parameters are maintained
+**Formato:** `urlbaseproxy/{url-destino-codificada-em-url}`
 
-### 2. No Axios Dependencies
-- **Native Node.js HTTP/HTTPS**: Uses built-in modules for maximum reliability
-- **No status code errors**: Never throws errors based on HTTP status codes
-- **Better error handling**: More granular control over network errors
-- **Improved performance**: No external HTTP library overhead
+Onde:
+- `urlbaseproxy` é a URL do seu proxy
+- `{url-destino-codificada-em-url}` é a URL de destino completa (incluindo protocolo, host, caminho e parâmetros de consulta) que foi codificada em URL
 
-### 3. Configuration via Environment Variables
-- **TARGET_HOST**: The base URL of the API you want to proxy to
-- **PORT**: The port the proxy server runs on (default: 3000)
+## Principais Funcionalidades
 
-## Usage Example
+### 1. URLs de Destino Dinâmicas
+- **Nenhuma configuração necessária**: Qualquer URL HTTP/HTTPS válida pode ser proxificada
+- **Codificação completa de URL**: URL de destino inclui protocolo, host, caminho e parâmetros de consulta
+- **Validação de segurança**: Apenas protocolos HTTP e HTTPS são permitidos
+- **Validação de URL**: Garante que URLs de destino sejam adequadamente formatadas
 
-### Before (Direct API calls):
+### 2. Encaminhamento Transparente
+- **Preservação de método**: GET, POST, PUT, PATCH, DELETE todos suportados
+- **Encaminhamento de cabeçalhos**: Todos os cabeçalhos (exceto hop-by-hop) são encaminhados
+- **Encaminhamento de corpo**: Dados JSON, form data, dados brutos todos suportados
+- **Preservação de parâmetros de consulta**: Todos os parâmetros de URL na URL de destino são mantidos
+
+### 3. Sem Dependências Externas
+- **HTTP/HTTPS nativo do Node.js**: Usa módulos integrados para máxima confiabilidade
+- **Sem erros de código de status**: Nunca lança erros baseados em códigos de status HTTP
+- **Melhor tratamento de erros**: Controle mais granular sobre erros de rede
+- **Performance melhorada**: Sem overhead de biblioteca HTTP externa
+
+## Exemplo de Uso
+
+### Integração com API Bancária:
+
 ```typescript
-// Your original banking API code
-async loginSystem(phone: string) {
-    const response = await this.httpClient.post(`${this.host}${this.env}/oauth/access-token`, params, {
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Authorization: this.loginBrendaBasic
-        }
+// Seu código original de API bancária:
+const response = await this.httpClient.post(
+  `${this.host}${this.env}/oauth/access-token`, 
+  params, 
+  { headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: this.loginBrendaBasic } }
+);
+
+// Usando o proxy dinâmico:
+const targetUrl = `${this.host}${this.env}/oauth/access-token`;
+const encodedUrl = encodeURIComponent(targetUrl);
+const proxyUrl = `https://seu-proxy.com/${encodedUrl}`;
+
+const response = await this.httpClient.post(
+  proxyUrl,
+  params,
+  { headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: this.loginBrendaBasic } }
+);
+```
+
+### Exemplos de Codificação de URL:
+
+```javascript
+// URLs originais
+const originalUrls = [
+  'https://api3.rendimento.com.br/v1/oauth/access-token',
+  'https://api3.rendimento.com.br/v1/ibautenticacao/v2/contas-correntes?cpf=cpf-codificado',
+  'https://api3.rendimento.com.br/v1/ibsaldoextrato/v2/saldos/usuario'
+];
+
+// Codificadas para proxy
+const proxyUrls = originalUrls.map(url => {
+  const encoded = encodeURIComponent(url);
+  return `https://seu-proxy.com/${encoded}`;
+});
+
+// Resultados:
+// https://seu-proxy.com/https%3A%2F%2Fapi3.rendimento.com.br%2Fv1%2Foauth%2Faccess-token
+// https://seu-proxy.com/https%3A%2F%2Fapi3.rendimento.com.br%2Fv1%2Fibautenticacao%2Fv2%2Fcontas-correntes%3Fcpf%3Dcpf-codificado
+// https://seu-proxy.com/https%3A%2F%2Fapi3.rendimento.com.br%2Fv1%2Fibsaldoextrato%2Fv2%2Fsaldos%2Fusuario
+```
+
+### Função Auxiliar para Sua Aplicação:
+
+```typescript
+class BankingAPIProxy {
+  private proxyBaseUrl: string;
+  private targetHost: string;
+
+  constructor(proxyBaseUrl: string, targetHost: string) {
+    this.proxyBaseUrl = proxyBaseUrl;
+    this.targetHost = targetHost;
+  }
+
+  private buildProxyUrl(path: string): string {
+    const targetUrl = `${this.targetHost}${path}`;
+    const encodedUrl = encodeURIComponent(targetUrl);
+    return `${this.proxyBaseUrl}/${encodedUrl}`;
+  }
+
+  async loginSystem(phone: string) {
+    const targetPath = `${this.env}/oauth/access-token`;
+    const proxyUrl = this.buildProxyUrl(targetPath);
+    
+    const response = await this.httpClient.post(proxyUrl, params, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: this.loginBrendaBasic
+      }
     });
-    // ... rest of the code
+    // ... resto do seu código permanece igual
+  }
+
+  async getAccounts(phone: string, cpf: string) {
+    const secureCpf = this.cryptoClient.encrypt(cpf);
+    const targetPath = `/ibautenticacao/${this.version}/contas-correntes?${secureCpf}`;
+    const proxyUrl = this.buildProxyUrl(targetPath);
+    
+    const response = await this.httpClient.get(proxyUrl, {
+      headers: {
+        access_token: this.sensediaToken?.access_token,
+        client_id: this.clientId
+      }
+    });
+    // ... resto do seu código permanece igual
+  }
 }
 ```
 
-### After (Through ECS Proxy):
-```typescript
-// Simply change the host to point to your ECS proxy
-// Everything else stays exactly the same!
-const proxyHost = 'https://your-ecs-proxy-url.com';
+## Detalhes de Implementação
 
-async loginSystem(phone: string) {
-    const response = await this.httpClient.post(`${proxyHost}/${this.env}/oauth/access-token`, params, {
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Authorization: this.loginBrendaBasic
-        }
-    });
-    // ... rest of the code stays identical
-}
-```
+### Funcionalidades de Segurança
 
-### Configuration:
-Set the `TARGET_HOST` environment variable in your ECS task to point to your actual API:
-```bash
-TARGET_HOST=https://api.sensedia.com  # Your actual banking API host
-```
+1. **Helmet.js**: Cabeçalhos de segurança
+2. **CORS**: Compartilhamento de recursos entre origens
+3. **Limites de tamanho de requisição**: Limite de 10MB para payloads
+4. **Sanitização de cabeçalhos**: Remove cabeçalhos hop-by-hop
+5. **Usuário não-root**: Container executa como usuário não-root
 
-### How It Works:
-1. Your app makes request to: `https://your-ecs-proxy.com/v1/oauth/access-token`
-2. Proxy forwards to: `https://api.sensedia.com/v1/oauth/access-token`
-3. Response is forwarded back unchanged
-4. All requests come from ECS's fixed IP (via NAT Gateway)
+### Implementação HTTP Nativa
 
-## Implementation Details
+1. **Sem dependências externas**: Usa módulos integrados `http`/`https` do Node.js
+2. **Tratamento confiável de status**: Nunca lança erros em códigos de status não-200
+3. **Streaming direto de resposta**: Canaliza dados de resposta diretamente para melhor performance
+4. **Categorização adequada de erros**: Distingue entre erros de rede, timeout e aplicação
 
-### Security Features
+### Monitoramento e Logging
 
-1. **Helmet.js**: Security headers
-2. **CORS**: Cross-origin resource sharing  
-3. **Request Size Limits**: 10MB limit for payloads
-4. **Header Sanitization**: Removes hop-by-hop headers
-5. **Non-root User**: Container runs as non-root user
+1. **Morgan**: Logging de requisições HTTP
+2. **Health Checks**: Endpoint de saúde integrado com informações do host de destino
+3. **Logging de erros**: Rastreamento abrangente de erros com timestamps
+4. **Logging de requisição/resposta**: Visibilidade completa das operações do proxy
 
-### Native HTTP Implementation
+## Guia de Implantação
 
-1. **No External Dependencies**: Uses Node.js built-in `http`/`https` modules
-2. **Reliable Status Handling**: Never throws errors on non-200 status codes
-3. **Direct Response Streaming**: Pipes response data directly for better performance
-4. **Proper Error Categorization**: Distinguishes between network, timeout, and application errors
+### Pré-requisitos
 
-### Monitoring & Logging
+1. Node.js instalado
+2. Docker instalado (opcional)
+3. Servidor configurado
 
-1. **Morgan**: HTTP request logging
-2. **Health Checks**: Built-in health endpoint with target host info
-3. **Error Logging**: Comprehensive error tracking with timestamps
-4. **Request/Response Logging**: Full visibility into proxy operations
-
-## Deployment Guide
-
-### Prerequisites
-
-1. AWS CLI configured
-2. Docker installed
-3. ECR repository created
-4. ECS cluster set up
-5. IAM roles configured
-
-### Step 1: Local Development
+### Passo 1: Desenvolvimento Local
 
 ```bash
-# Install dependencies
+# Instalar dependências
 npm install
 
-# Run locally
+# Executar localmente
 npm run dev
 
-# Test the application
-curl -X POST http://localhost:3000/proxy \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://httpbin.org/get",
-    "method": "GET"
-  }'
+# Testar a aplicação
+curl -X GET "http://localhost:3000/https%3A%2F%2Fhttpbin.org%2Fget"
 ```
 
-### Step 2: Docker Build and Test
+### Passo 2: Build e Teste com Docker
 
 ```bash
-# Build Docker image
-docker build -t rendimento-proxy .
+# Construir imagem Docker
+docker build -t proxy-http .
 
-# Run container locally
-docker run -p 3000:3000 rendimento-proxy
+# Executar container localmente
+docker run -p 3000:3000 proxy-http
 
-# Or use docker-compose
+# Ou usar docker-compose
 docker-compose up
 ```
 
-### Step 3: AWS ECS Deployment
+### Passo 3: Implantação em Servidor
 
-1. **Create ECR Repository:**
+1. **Implantação Direta:**
 ```bash
-aws ecr create-repository --repository-name rendimento-proxy
+# Clonar repositório
+git clone <seu-repositorio>
+cd rendimento-api-ecs
+
+# Instalar dependências
+npm install
+
+# Iniciar em produção
+npm start
 ```
 
-2. **Update Configuration:**
-   - Edit `ecs-task-definition.json` with your AWS account details
-   - Update `deploy.sh` with your specific configuration
-
-3. **Deploy:**
+2. **Com PM2 (Recomendado):**
 ```bash
-./deploy.sh
+# Instalar PM2 globalmente
+npm install -g pm2
+
+# Iniciar aplicação
+pm2 start src/app.js --name "http-proxy"
+
+# Configurar para iniciar no boot
+pm2 startup
+pm2 save
 ```
 
-### Step 4: ECS Service Configuration
+### Passo 4: Configuração de Proxy Reverso (Opcional)
 
-Create an ECS service with:
-- **Network Configuration**: VPC with NAT Gateway for consistent IP
-- **Load Balancer**: Application Load Balancer for high availability
-- **Auto Scaling**: Based on CPU/memory utilization
-- **Security Groups**: Allow inbound traffic on port 3000
+**Nginx:**
+```nginx
+server {
+    listen 80;
+    server_name seu-dominio.com;
 
-## Network Configuration for Fixed IP
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
 
-To achieve a fixed IP address:
+## Configuração de Rede para IP Fixo
 
-1. **VPC Setup:**
-   - Private subnets for ECS tasks
-   - Public subnets for NAT Gateway
-   - Internet Gateway for outbound traffic
+Para alcançar um endereço IP fixo em ambiente de servidor:
 
-2. **NAT Gateway:**
-   - Deployed in public subnet
-   - Elastic IP attached for consistent outbound IP
-   - Route table directs private subnet traffic through NAT
+1. **Configuração VPS/Servidor Dedicado:**
+   - Use um servidor com IP estático
+   - Configure regras de firewall adequadas
+   - Use proxy reverso se necessário
 
-3. **ECS Service:**
-   - Deploy in private subnets
-   - All outbound traffic goes through NAT Gateway
-   - Provides consistent IP for external API calls
+2. **Configuração de Rede:**
+   - Configure interfaces de rede adequadamente
+   - Use NAT se executando em container
+   - Configure roteamento se necessário
 
-## Monitoring and Maintenance
+## Monitoramento e Manutenção
 
-### CloudWatch Metrics
+### Métricas Importantes
 
-Monitor these key metrics:
-- CPU and memory utilization
-- Request count and latency
-- Error rates
-- Health check status
+Monitore estas métricas principais:
+- Utilização de CPU e memória
+- Contagem de requisições e latência
+- Taxas de erro
+- Status de health check
 
 ### Logging
 
-Configure CloudWatch Logs for:
-- Application logs
-- ECS task logs
-- Load balancer access logs
+Configure logs para:
+- Logs da aplicação
+- Logs de acesso
+- Logs de erro
 
-### Alerts
+### Alertas
 
-Set up CloudWatch alarms for:
-- High error rates
-- Resource utilization
-- Health check failures
+Configure alertas para:
+- Altas taxas de erro
+- Utilização de recursos
+- Falhas de health check
 
-## Security Considerations
+## Considerações de Segurança
 
-1. **Network Security:**
-   - Use security groups to restrict access
-   - Deploy in private subnets
-   - Use VPC endpoints where possible
+1. **Segurança de Rede:**
+   - Use firewalls para restringir acesso
+   - Configure SSL/TLS adequadamente
+   - Use VPN se necessário
 
-2. **Application Security:**
-   - Input validation on all requests
-   - Rate limiting (implement if needed)
-   - SSL/TLS for all communications
+2. **Segurança da Aplicação:**
+   - Validação de entrada em todas as requisições
+   - Rate limiting (implemente se necessário)
+   - SSL/TLS para todas as comunicações
 
-3. **IAM Permissions:**
-   - Least privilege access
-   - Separate roles for different functions
-   - Regular permission audits
+3. **Segurança do Servidor:**
+   - Mantenha o sistema operacional atualizado
+   - Use usuários não-privilegiados
+   - Auditorias regulares de segurança
 
-## Performance Optimization
+## Otimização de Performance
 
-1. **Container Resources:**
-   - Right-size CPU and memory
-   - Use appropriate instance types
-   - Monitor resource utilization
+1. **Recursos do Servidor:**
+   - Dimensione CPU e memória adequadamente
+   - Use tipos de instância apropriados
+   - Monitore utilização de recursos
 
-2. **Network Performance:**
-   - Use placement groups if needed
-   - Consider enhanced networking
-   - Monitor network metrics
+2. **Performance de Rede:**
+   - Otimize configurações de rede
+   - Use CDN se aplicável
+   - Monitore métricas de rede
 
-3. **Application Tuning:**
-   - Adjust timeout values
-   - Optimize connection pooling
-   - Implement request queuing if needed
+3. **Tuning da Aplicação:**
+   - Ajuste valores de timeout
+   - Otimize pool de conexões
+   - Implemente fila de requisições se necessário
 
-## Troubleshooting
+## Solução de Problemas
 
-### Common Issues
+### Problemas Comuns
 
-1. **Connection Timeouts:**
-   - Check security group rules
-   - Verify network connectivity
-   - Increase timeout values
+1. **Timeouts de Conexão:**
+   - Verifique regras de firewall
+   - Verifique conectividade de rede
+   - Aumente valores de timeout
 
-2. **High Memory Usage:**
-   - Monitor request sizes
-   - Check for memory leaks
-   - Optimize payload handling
+2. **Alto uso de memória:**
+   - Monitore tamanhos de requisição
+   - Verifique vazamentos de memória
+   - Otimize manipulação de payload
 
-3. **CORS Issues:**
-   - Verify proxy is forwarding headers correctly
-   - Check target API CORS configuration
-   - Confirm consistent IP usage
+3. **Problemas de CORS:**
+   - Verifique se proxy está encaminhando cabeçalhos corretamente
+   - Verifique configuração CORS da API de destino
+   - Confirme uso consistente de IP
 
 ### Debugging
 
-1. **Application Logs:**
+1. **Logs da Aplicação:**
 ```bash
-aws logs tail /ecs/rendimento-proxy --follow
+# Ver logs em tempo real
+tail -f logs/app.log
+
+# Para PM2
+pm2 logs http-proxy
 ```
 
-2. **ECS Task Status:**
+2. **Health Checks:**
 ```bash
-aws ecs describe-tasks --cluster rendimento-cluster --tasks task-id
+curl https://sua-url-do-servico/health
 ```
 
-3. **Health Checks:**
+3. **Monitoramento de Sistema:**
 ```bash
-curl https://your-service-url/health
+# Verificar uso de recursos
+htop
+# ou
+top
+
+# Verificar conexões de rede
+netstat -an | grep :3000
 ```
 
-## Cost Optimization
+## Otimização de Custos
 
-1. **Right-sizing:**
-   - Monitor actual resource usage
-   - Adjust task definitions accordingly
-   - Use Spot instances where appropriate
+1. **Dimensionamento Adequado:**
+   - Monitore uso real de recursos
+   - Ajuste configurações de acordo
+   - Use instâncias econômicas onde apropriado
 
 2. **Auto Scaling:**
-   - Scale based on demand
-   - Set appropriate scaling policies
-   - Monitor scaling events
+   - Scale baseado na demanda
+   - Configure políticas de scaling apropriadas
+   - Monitore eventos de scaling
 
-3. **Network Costs:**
-   - Minimize cross-AZ traffic
-   - Optimize data transfer
-   - Consider VPC endpoints for AWS services
+3. **Custos de Rede:**
+   - Minimize tráfego desnecessário
+   - Otimize transferência de dados
+   - Use cache quando possível
 
-## Conclusion
+## Conclusão
 
-This Express.js proxy service provides a robust solution for fixing IP addresses when making HTTP requests from Lambda functions. The containerized approach with ECS ensures scalability, reliability, and consistent network behavior while maintaining security and performance best practices.
+Este serviço de proxy Express.js fornece uma solução robusta para corrigir endereços IP ao fazer requisições HTTP. A abordagem containerizada garante escalabilidade, confiabilidade e comportamento de rede consistente, mantendo as melhores práticas de segurança e performance.
 
-The implementation includes comprehensive error handling, monitoring capabilities, and production-ready deployment configurations to ensure reliable operation in AWS environments.
+A implementação inclui tratamento abrangente de erros, capacidades de monitoramento e configurações de implantação prontas para produção para garantir operação confiável em ambientes de servidor.

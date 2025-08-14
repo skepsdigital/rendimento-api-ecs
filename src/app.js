@@ -5,10 +5,10 @@ const { URL } = require('url');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const { url } = require('inspector');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const TARGET_HOST = process.env.TARGET_HOST || 'https://api.example.com';
 
 // Middleware
 app.use(helmet());
@@ -24,11 +24,11 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    targetHost: TARGET_HOST
+    proxyPattern: 'Use: /{url-encoded-target-url}'
   });
 });
 
-// Transparent proxy middleware for all routes except /health
+// Dynamic proxy middleware for all routes except /health
 app.use('*', async (req, res) => {
   // Skip health check
   if (req.originalUrl === '/health') {
@@ -36,12 +36,53 @@ app.use('*', async (req, res) => {
   }
 
   try {
-    // Extract path from the original URL (removing any leading slash if present)
+    // Extract the URL-encoded target URL from the path
+    // Format: /{url-encoded-target-url}
     const urlPath = req.originalUrl.startsWith('/') ? req.originalUrl.slice(1) : req.originalUrl;
-    
-    // Construct the target URL
-    const targetUrl = `${TARGET_HOST}/${urlPath}`;
-    const parsedUrl = new URL(targetUrl);
+    const targetBaseUrl = urlPath.split('/')[0] ?? urlPath;
+    const targetPath = "/" + urlPath.split('/').slice(1).join('/') || '/';
+    const targetBaseUrlDecoded = decodeURIComponent(targetBaseUrl);
+
+    if (!urlPath) {
+      return res.status(400).json({
+        error: 'Missing target URL',
+        message: 'Request format should be: /{url-encoded-target-url}',
+        example: '/https%3A%2F%2Fapi.example.com%2Fv1%2Fusers'
+      });
+    }
+
+    // Decode the target URL
+    let targetUrl;
+    try {
+      targetUrl = decodeURIComponent(urlPath);
+    } catch (error) {
+      return res.status(400).json({
+        error: 'Invalid URL encoding',
+        message: 'The target URL must be properly URL-encoded',
+        received: urlPath
+      });
+    }
+
+    // Validate that it's a proper URL
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(targetBaseUrlDecoded + targetPath);
+    } catch (error) {
+      return res.status(400).json({
+        error: 'Invalid target URL',
+        message: 'The decoded URL is not a valid URL',
+        decoded: targetUrl
+      });
+    }
+
+    // Only allow HTTP and HTTPS protocols for security
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return res.status(400).json({
+        error: 'Invalid protocol',
+        message: 'Only HTTP and HTTPS protocols are allowed',
+        protocol: parsedUrl.protocol
+      });
+    }
     
     // Clean up request headers (remove hop-by-hop headers and host-specific headers)
     const forwardHeaders = { ...req.headers };
@@ -62,7 +103,7 @@ app.use('*', async (req, res) => {
     forwardHeaders['host'] = parsedUrl.host;
 
     console.log(`[${new Date().toISOString()}] Proxying ${req.method} ${req.originalUrl} -> ${targetUrl}`);
-    console.log(`[${new Date().toISOString()}] Headers:`, JSON.stringify(forwardHeaders, null, 2));
+    console.log(`[${new Date().toISOString()}] Target host: ${parsedUrl.host}`);
 
     // Prepare request body
     let requestBody = '';
@@ -197,10 +238,10 @@ app.use('*', (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`[${new Date().toISOString()}] Transparent proxy server running on port ${PORT}`);
+  console.log(`[${new Date().toISOString()}] Dynamic proxy server running on port ${PORT}`);
   console.log(`[${new Date().toISOString()}] Health check available at: http://localhost:${PORT}/health`);
-  console.log(`[${new Date().toISOString()}] Target host: ${TARGET_HOST}`);
-  console.log(`[${new Date().toISOString()}] All requests will be forwarded to target host with same path`);
+  console.log(`[${new Date().toISOString()}] Usage: /{url-encoded-target-url}`);
+  console.log(`[${new Date().toISOString()}] Example: /https%3A%2F%2Fapi.example.com%2Fv1%2Fusers`);
 });
 
 module.exports = app;
