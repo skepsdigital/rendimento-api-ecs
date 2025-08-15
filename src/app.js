@@ -38,10 +38,14 @@ app.use('*', async (req, res) => {
   try {
     // Extract the URL-encoded target URL from the path
     // Format: /{url-encoded-target-url}
+    console.log(`[${new Date().toISOString()}] Extracting target URL from: ${req.originalUrl}`);
     const urlPath = req.originalUrl.startsWith('/') ? req.originalUrl.slice(1) : req.originalUrl;
     const targetBaseUrl = urlPath.split('/')[0] ?? urlPath;
-    const targetPath = "/" + urlPath.split('/').slice(1).join('/') || '/';
+    console.log("Target Base URL:", targetBaseUrl);
+    const targetPath = urlPath.includes("/") ? "/" + urlPath.split('/').slice(1).join('/') : '';
+    console.log("Target Path:", targetPath);
     const targetBaseUrlDecoded = decodeURIComponent(targetBaseUrl);
+    console.log("Target Base URL (decoded):", targetBaseUrlDecoded);
 
     if (!urlPath) {
       return res.status(400).json({
@@ -64,6 +68,7 @@ app.use('*', async (req, res) => {
     }
 
     // Validate that it's a proper URL
+    console.log("Final Target URL:", targetBaseUrlDecoded + targetPath);
     let parsedUrl;
     try {
       parsedUrl = new URL(targetBaseUrlDecoded + targetPath);
